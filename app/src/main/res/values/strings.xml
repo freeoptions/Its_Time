@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">到点啦</string>
+    <string name="notification_channel_name">到点啦提醒</string>
+    <string name="notification_channel_description">到达设定时间时显示提醒</string>
+</resources>
