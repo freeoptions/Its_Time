@@ -4,8 +4,10 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 
 class ReminderAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -23,10 +25,53 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
                         runCatching { ReminderDeliverySource.valueOf(value) }.getOrNull()
                     }
                     ?: ReminderDeliverySource.SYSTEM_ALARM
-                fireReminder(context, repository, reminder, deliverySource)
+                ReminderDiagnostics.recordFired(context, reminder.id, deliverySource)
+                ReminderEventLog.append(
+                    context,
+                    ReminderLogType.ALARM_FIRED,
+                    "source=${deliverySource.name}；stage=RECEIVER；expected=${reminder.triggerAtMillis ?: reminder.timeMinutes}",
+                    reminder.id
+                )
+
+                val serviceIntent = Intent(context, ReminderTriggerService::class.java).apply {
+                    action = ReminderScheduler.ACTION_FIRE
+                    putExtra(ReminderScheduler.EXTRA_REMINDER_ID, reminder.id)
+                    putExtra(ReminderScheduler.EXTRA_DELIVERY_SOURCE, deliverySource.name)
+                }
+                runCatching {
+                    ContextCompat.startForegroundService(context, serviceIntent)
+                }.onFailure { error ->
+                    // 精确闹钟通常允许从后台启动 FGS；厂商实现异常时仍直接投递，避免整条链路丢失。
+                    ReminderEventLog.append(
+                        context,
+                        ReminderLogType.SYSTEM_EVENT,
+                        "触发服务启动失败，改为广播内直接投递；error=${error.message ?: "未知错误"}",
+                        reminder.id
+                    )
+                    fireReminder(context, repository, reminder, deliverySource)
+                }
             }
             ReminderScheduler.ACTION_MARK_DONE -> markDone(context, repository, reminder)
         }
+    }
+
+    internal fun deliverReminder(
+        context: Context,
+        reminderId: Long,
+        deliverySource: ReminderDeliverySource
+    ) {
+        val repository = ReminderRepository(context)
+        val reminder = repository.getById(reminderId)
+        if (reminder == null) {
+            ReminderEventLog.append(
+                context,
+                ReminderLogType.NOTIFICATION_FAILED,
+                "触发后未找到提醒数据",
+                reminderId
+            )
+            return
+        }
+        fireReminder(context, repository, reminder, deliverySource)
     }
 
     private fun fireReminder(
@@ -46,11 +91,10 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
                 ReminderScheduleSource.REPEAT_NEXT
             )
         }
-        ReminderDiagnostics.recordFired(context, reminder.id, deliverySource)
         ReminderEventLog.append(
             context,
-            ReminderLogType.ALARM_FIRED,
-            "source=${deliverySource.name}；expected=${reminder.triggerAtMillis ?: reminder.timeMinutes}",
+            ReminderLogType.SYSTEM_EVENT,
+            "短时触发服务接管提醒投递；source=${deliverySource.name}",
             reminder.id
         )
         showReminder(context, reminder)
@@ -78,6 +122,7 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
 
         val notification = NotificationCompat.Builder(context, ReminderNotifications.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(BitmapFactory.decodeResource(context.resources, R.drawable.app_icon))
             .setContentTitle(reminder.title)
             .setContentText("完成后向左滑除 · ${formatTime(reminder.timeMinutes)}")
             .setSubText("到点啦")

@@ -12,7 +12,6 @@ object ReminderScheduler {
     const val ACTION_MARK_DONE = "com.daodianla.app.action.MARK_REMINDER_DONE"
     const val EXTRA_REMINDER_ID = "extra_reminder_id"
     const val EXTRA_DELIVERY_SOURCE = "extra_delivery_source"
-    private const val SHOW_REQUEST_OFFSET = 200_000
     private const val MISSED_REMINDER_DELAY_MILLIS = 1_000L
 
     fun schedule(
@@ -34,15 +33,11 @@ object ReminderScheduler {
 
         if (canScheduleExactAlarms(context)) {
             val exactResult = runCatching {
-                // 注册为系统闹钟，应用进程不需要常驻，Doze 期间也能唤醒设备。
-                val showIntent = PendingIntent.getActivity(
-                    context,
-                    reminder.notificationId + SHOW_REQUEST_OFFSET,
-                    Intent(context, MainActivity::class.java),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                alarmManager.setAlarmClock(
-                    AlarmManager.AlarmClockInfo(triggerAtMillis, showIntent),
+                // 与经过真机验证的 MAA 调度链路保持一致：精确唤醒并允许在 Doze 中投递。
+                // 闹钟由系统持有，应用进程或最近任务卡片不需要常驻。
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
                     pendingIntent
                 )
             }
@@ -58,7 +53,7 @@ object ReminderScheduler {
                 ReminderEventLog.append(
                     context,
                     ReminderLogType.SCHEDULED,
-                    "exact=true；source=${source.name}；requested=$requestedTriggerAtMillis；target=$triggerAtMillis",
+                    "exact=true；api=SET_EXACT_AND_ALLOW_WHILE_IDLE；source=${source.name}；requested=$requestedTriggerAtMillis；target=$triggerAtMillis",
                     reminder.id
                 )
                 return
@@ -155,7 +150,7 @@ object ReminderScheduler {
             ReminderEventLog.append(
                 context,
                 ReminderLogType.SCHEDULED,
-                "exact=false；source=${source.name}；requested=$requestedTriggerAtMillis；target=$triggerAtMillis",
+                "exact=false；api=SET_AND_ALLOW_WHILE_IDLE；source=${source.name}；requested=$requestedTriggerAtMillis；target=$triggerAtMillis",
                 reminderId
             )
         }.onFailure {

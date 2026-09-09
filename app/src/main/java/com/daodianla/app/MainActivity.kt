@@ -2,11 +2,15 @@ package com.daodianla.app
 
 import android.Manifest
 import android.app.TimePickerDialog
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -64,6 +68,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +85,9 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
@@ -111,6 +119,7 @@ class MainActivity : ComponentActivity() {
 private fun DaoDianLaApp() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val exportScope = rememberCoroutineScope()
     val repository = remember { ReminderRepository(context.applicationContext) }
     var reminders by remember { mutableStateOf(repository.getAll()) }
     var reliabilityStatus by remember {
@@ -128,6 +137,13 @@ private fun DaoDianLaApp() {
     var editorReminder by remember { mutableStateOf<Reminder?>(null) }
     var editorVisible by remember { mutableStateOf(false) }
     var settingsVisible by remember { mutableStateOf(false) }
+    var exportDirectoryUri by remember {
+        mutableStateOf(ReminderExportManager.getExportDirectory(context))
+    }
+    var exportInProgress by remember { mutableStateOf(false) }
+    val readableExportDirectory = remember(exportDirectoryUri) {
+        displayableDirectoryPath(context, exportDirectoryUri)
+    }
 
     fun refresh(reconcile: Boolean = false) {
         ReminderNotifications.ensureChannel(context)
@@ -152,14 +168,106 @@ private fun DaoDianLaApp() {
         refresh(reconcile = true)
     }
 
+    val exportDirectoryPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        uri?.let {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    it,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }.onFailure { error ->
+                Log.w("ReminderExport", "无法持久化导出目录授权", error)
+            }
+            exportDirectoryUri = it.toString()
+            ReminderExportManager.setExportDirectory(context, it.toString())
+            Toast.makeText(context, "导出位置已保存", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val exportFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        uri?.let {
+            exportInProgress = true
+            exportScope.launch(Dispatchers.IO) {
+                val result = runCatching {
+                    ReminderExportManager.exportToUri(
+                        context.applicationContext,
+                        it,
+                        repository.getAll()
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    exportInProgress = false
+                    result.onSuccess {
+                        Toast.makeText(context, "配置已导出到指定位置", Toast.LENGTH_SHORT).show()
+                    }.onFailure { error ->
+                        Toast.makeText(
+                            context,
+                            "导出失败：${error.message ?: "无法写入文件"}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
+    fun exportAllReminders() {
+        val directory = exportDirectoryUri
+        if (directory.isNullOrBlank()) {
+            exportFileLauncher.launch(ReminderExportManager.createFileName())
+            return
+        }
+
+        exportInProgress = true
+        exportScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                ReminderExportManager.exportToDirectory(
+                    context.applicationContext,
+                    directory,
+                    repository.getAll()
+                )
+            }
+            withContext(Dispatchers.Main) {
+                exportInProgress = false
+                result.onSuccess {
+                    Toast.makeText(context, "配置已导出到指定位置", Toast.LENGTH_SHORT).show()
+                }.onFailure { error ->
+                    Toast.makeText(
+                        context,
+                        "导出失败：${error.message ?: "导出位置不可用，请重新选择"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         repository.createTestReminderIfNeeded()
         refresh(reconcile = true)
+        withContext(Dispatchers.IO) {
+            ReminderExportManager.maybeAutoBackup(
+                context.applicationContext,
+                repository.getAll()
+            )
+        }
     }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) refresh(reconcile = true)
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refresh(reconcile = true)
+                exportScope.launch(Dispatchers.IO) {
+                    ReminderExportManager.maybeAutoBackup(
+                        context.applicationContext,
+                        repository.getAll()
+                    )
+                }
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -214,6 +322,13 @@ private fun DaoDianLaApp() {
         refresh()
     }
 
+    BackHandler(enabled = settingsVisible || editorVisible) {
+        when {
+            settingsVisible -> settingsVisible = false
+            editorVisible -> editorVisible = false
+        }
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = DaoDianLaColors.background) {
         if (settingsVisible) {
             ReminderSettingsScreen(
@@ -242,7 +357,19 @@ private fun DaoDianLaApp() {
                 },
                 onShareLogs = {
                     ReminderSystemSettings.shareDiagnosticReport(context)
-                }
+                },
+                exportDirectoryPath = readableExportDirectory,
+                reminderCount = reminders.size,
+                exportInProgress = exportInProgress,
+                onSelectExportDirectory = {
+                    exportDirectoryPickerLauncher.launch(null)
+                },
+                onClearExportDirectory = {
+                    ReminderExportManager.clearExportDirectory(context)
+                    exportDirectoryUri = null
+                    Toast.makeText(context, "已清除导出位置", Toast.LENGTH_SHORT).show()
+                },
+                onExportReminders = ::exportAllReminders
             )
         } else if (editorVisible) {
             ReminderEditorScreen(

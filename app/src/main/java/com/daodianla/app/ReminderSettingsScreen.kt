@@ -23,6 +23,8 @@ import androidx.compose.material.icons.outlined.CheckCircleOutline
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Refresh
@@ -32,6 +34,7 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,7 +72,13 @@ fun ReminderSettingsScreen(
     onOpenBatterySettings: () -> Unit,
     onManualCheckChanged: (ManualReliabilityCheck, Boolean) -> Unit,
     onCopyLogs: () -> Unit,
-    onShareLogs: () -> Unit
+    onShareLogs: () -> Unit,
+    exportDirectoryPath: String?,
+    reminderCount: Int,
+    exportInProgress: Boolean,
+    onSelectExportDirectory: () -> Unit,
+    onClearExportDirectory: () -> Unit,
+    onExportReminders: () -> Unit
 ) {
     var copied by remember { mutableStateOf(false) }
 
@@ -192,6 +201,20 @@ fun ReminderSettingsScreen(
                 )
             }
 
+            item {
+                SettingsSectionTitle("任务导出", "备份当前全部提醒，换机后可直接导入")
+            }
+            item {
+                ExportSettingsCard(
+                    exportDirectoryPath = exportDirectoryPath,
+                    reminderCount = reminderCount,
+                    exportInProgress = exportInProgress,
+                    onSelectExportDirectory = onSelectExportDirectory,
+                    onClearExportDirectory = onClearExportDirectory,
+                    onExportReminders = onExportReminders
+                )
+            }
+
             item { SettingsSectionTitle("诊断日志", "漏提醒时复制给开发者排查") }
             item {
                 DiagnosticLogCard(
@@ -203,6 +226,96 @@ fun ReminderSettingsScreen(
                     },
                     onShare = onShareLogs
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExportSettingsCard(
+    exportDirectoryPath: String?,
+    reminderCount: Int,
+    exportInProgress: Boolean,
+    onSelectExportDirectory: () -> Unit,
+    onClearExportDirectory: () -> Unit,
+    onExportReminders: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DaoDianLaColors.line),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(DaoDianLaColors.blueTint),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Outlined.FileDownload,
+                        contentDescription = null,
+                        tint = DaoDianLaColors.blue,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("导出位置", color = DaoDianLaColors.ink, fontWeight = FontWeight.Bold)
+                    Text(
+                        exportDirectoryPath ?: "未设置（导出时选择）",
+                        color = if (exportDirectoryPath == null) {
+                            DaoDianLaColors.muted
+                        } else {
+                            DaoDianLaColors.blue
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "当前共 $reminderCount 条任务；设置目录后可按原位置自动备份。",
+                color = DaoDianLaColors.muted,
+                style = MaterialTheme.typography.bodySmall
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onSelectExportDirectory,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(13.dp)
+                ) {
+                    Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("选择目录")
+                }
+                if (exportDirectoryPath != null) {
+                    OutlinedButton(
+                        onClick = onClearExportDirectory,
+                        shape = RoundedCornerShape(13.dp)
+                    ) {
+                        Text("清除")
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = onExportReminders,
+                enabled = !exportInProgress,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(13.dp)
+            ) {
+                Icon(Icons.Outlined.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (exportInProgress) "正在导出…" else "导出全部任务")
             }
         }
     }

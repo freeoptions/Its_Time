@@ -2,4 +2,7 @@
     <string name="app_name">到点啦</string>
     <string name="notification_channel_name">到点啦提醒</string>
     <string name="notification_channel_description">到达设定时间时显示提醒</string>
+    <string name="notification_trigger_channel_name">提醒触发服务</string>
+    <string name="notification_trigger_channel_description">仅在到点投递提醒时短暂运行</string>
+    <string name="notification_trigger_title">正在投递提醒</string>
 </resources>
