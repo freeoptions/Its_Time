@@ -5,6 +5,7 @@ import android.app.Application
 class DaoDianLaApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        ChineseWorkdayCalendar.load(this)
         ReminderEventLog.append(
             this,
             ReminderLogType.PROCESS_STARTED,

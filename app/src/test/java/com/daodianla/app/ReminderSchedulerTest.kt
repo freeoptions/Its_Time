@@ -43,6 +43,58 @@ class ReminderSchedulerTest {
     }
 
     @Test
+    fun weekdayReminder_includesOfficialAdjustedSunday() {
+        val sundayBeforeReminder = Calendar.getInstance().apply {
+            set(Calendar.YEAR, 2026)
+            set(Calendar.MONTH, Calendar.SEPTEMBER)
+            set(Calendar.DAY_OF_MONTH, 19)
+            set(Calendar.HOUR_OF_DAY, 12)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val reminder = Reminder(7L, "测试", 17 * 60 + 30, 6, RepeatMode.WEEKDAYS)
+
+        val next = Calendar.getInstance().apply {
+            timeInMillis = ReminderScheduler.nextTriggerMillis(
+                reminder,
+                sundayBeforeReminder.timeInMillis
+            )
+        }
+
+        assertEquals(2026, next.get(Calendar.YEAR))
+        assertEquals(Calendar.SEPTEMBER, next.get(Calendar.MONTH))
+        assertEquals(20, next.get(Calendar.DAY_OF_MONTH))
+        assertEquals(Calendar.SUNDAY, next.get(Calendar.DAY_OF_WEEK))
+    }
+
+    @Test
+    fun weekdayReminder_skipsOfficialHolidayOnWeekday() {
+        val holidayBeforeReminder = Calendar.getInstance().apply {
+            set(Calendar.YEAR, 2026)
+            set(Calendar.MONTH, Calendar.SEPTEMBER)
+            set(Calendar.DAY_OF_MONTH, 24)
+            set(Calendar.HOUR_OF_DAY, 18)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val reminder = Reminder(8L, "测试", 9 * 60, 6, RepeatMode.WEEKDAYS)
+
+        val next = Calendar.getInstance().apply {
+            timeInMillis = ReminderScheduler.nextTriggerMillis(
+                reminder,
+                holidayBeforeReminder.timeInMillis
+            )
+        }
+
+        assertEquals(2026, next.get(Calendar.YEAR))
+        assertEquals(Calendar.SEPTEMBER, next.get(Calendar.MONTH))
+        assertEquals(28, next.get(Calendar.DAY_OF_MONTH))
+        assertEquals(Calendar.MONDAY, next.get(Calendar.DAY_OF_WEEK))
+    }
+
+    @Test
     fun onceReminder_keepsItsPersistedAbsoluteTrigger() {
         val now = 1_000_000L
         val expected = now + 60_000L

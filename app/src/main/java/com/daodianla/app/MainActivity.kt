@@ -134,6 +134,10 @@ private fun DaoDianLaApp() {
     var eventLogs by remember {
         mutableStateOf(ReminderEventLog.entries(context, 20))
     }
+    var holidaySyncInfo by remember {
+        mutableStateOf(HolidayCalendarSync.info(context))
+    }
+    var holidayCheckInProgress by remember { mutableStateOf(false) }
     var editorReminder by remember { mutableStateOf<Reminder?>(null) }
     var editorVisible by remember { mutableStateOf(false) }
     var settingsVisible by remember { mutableStateOf(false) }
@@ -160,6 +164,7 @@ private fun DaoDianLaApp() {
         diagnostics = ReminderDiagnostics.snapshot(context)
         systemStatus = ReminderSystemSettings.status(context)
         eventLogs = ReminderEventLog.entries(context, 20)
+        holidaySyncInfo = HolidayCalendarSync.info(context)
     }
 
     val requestNotificationPermission = rememberLauncherForActivityResult(
@@ -242,6 +247,19 @@ private fun DaoDianLaApp() {
                         Toast.LENGTH_LONG
                     ).show()
                 }
+            }
+        }
+    }
+
+    fun checkHolidayCalendar() {
+        if (holidayCheckInProgress) return
+        holidayCheckInProgress = true
+        exportScope.launch(Dispatchers.IO) {
+            val result = HolidayCalendarSync.check(context.applicationContext)
+            withContext(Dispatchers.Main) {
+                holidayCheckInProgress = false
+                refresh(reconcile = result.updated)
+                Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -334,8 +352,11 @@ private fun DaoDianLaApp() {
             ReminderSettingsScreen(
                 status = systemStatus,
                 logs = eventLogs,
+                holidaySyncInfo = holidaySyncInfo,
+                holidayCheckInProgress = holidayCheckInProgress,
                 onBack = { settingsVisible = false },
                 onRefresh = { refresh() },
+                onCheckHolidayCalendar = ::checkHolidayCalendar,
                 onOpenNotificationSettings = {
                     ReminderSystemSettings.openNotificationSettings(context)
                 },
@@ -1064,7 +1085,7 @@ private fun ReminderEditorScreen(
                             text = when (repeatMode) {
                                 RepeatMode.ONCE -> "今天设置一个还没到的时间，提醒一次"
                                 RepeatMode.DAILY -> "每天 ${formatTime(timeMinutes)} 提醒"
-                                RepeatMode.WEEKDAYS -> "周一至周五 ${formatTime(timeMinutes)} 提醒"
+                                RepeatMode.WEEKDAYS -> "法定工作日（含调休）${formatTime(timeMinutes)} 提醒"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = DaoDianLaColors.muted

@@ -220,15 +220,12 @@ object ReminderScheduler {
         }
 
         if (reminder.repeatMode == RepeatMode.WEEKDAYS) {
-            while (!isWeekday(candidate)) {
+            while (!ChineseWorkdayCalendar.isWorkday(candidate)) {
                 candidate.add(Calendar.DAY_OF_YEAR, 1)
             }
         }
         return candidate.timeInMillis
     }
-
-    private fun isWeekday(calendar: Calendar): Boolean =
-        calendar.get(Calendar.DAY_OF_WEEK) !in setOf(Calendar.SATURDAY, Calendar.SUNDAY)
 
     private fun alarmPendingIntent(
         context: Context,

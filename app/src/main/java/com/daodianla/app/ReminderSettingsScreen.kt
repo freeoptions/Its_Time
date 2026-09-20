@@ -58,14 +58,21 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReminderSettingsScreen(
     status: ReminderSystemStatus,
     logs: List<ReminderLogEntry>,
+    holidaySyncInfo: HolidayCalendarSyncInfo,
+    holidayCheckInProgress: Boolean,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
+    onCheckHolidayCalendar: () -> Unit,
     onOpenNotificationSettings: () -> Unit,
     onOpenExactAlarmSettings: () -> Unit,
     onOpenAutostartSettings: () -> Unit,
@@ -202,6 +209,17 @@ fun ReminderSettingsScreen(
             }
 
             item {
+                SettingsSectionTitle("节假日数据", "手动检查官方安排，24 小时内不会重复请求")
+            }
+            item {
+                HolidayCalendarCard(
+                    syncInfo = holidaySyncInfo,
+                    checking = holidayCheckInProgress,
+                    onCheck = onCheckHolidayCalendar
+                )
+            }
+
+            item {
                 SettingsSectionTitle("任务导出", "备份当前全部提醒，换机后可直接导入")
             }
             item {
@@ -230,6 +248,95 @@ fun ReminderSettingsScreen(
         }
     }
 }
+
+@Composable
+private fun HolidayCalendarCard(
+    syncInfo: HolidayCalendarSyncInfo,
+    checking: Boolean,
+    onCheck: () -> Unit
+) {
+    val statusLabel = when (syncInfo.targetYearStatus) {
+        HolidayYearStatus.PUBLISHED -> "已发布，将按官方安排判断"
+        HolidayYearStatus.NOT_PUBLISHED -> "官方安排暂未发布"
+        HolidayYearStatus.LOCAL_FALLBACK -> "暂未收录，按周一至周五判断"
+    }
+    val statusColor = if (syncInfo.targetYearStatus == HolidayYearStatus.NOT_PUBLISHED) {
+        DaoDianLaColors.warning
+    } else {
+        DaoDianLaColors.blue
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DaoDianLaColors.line),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(DaoDianLaColors.blueTint),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Outlined.Refresh,
+                        contentDescription = null,
+                        tint = DaoDianLaColors.blue,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "${syncInfo.targetYear} 年节假日",
+                        color = DaoDianLaColors.ink,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(statusLabel, color = statusColor, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "数据来源：项目维护的官方安排文件；不会读取小米日历，也不会后台频繁联网。",
+                color = DaoDianLaColors.muted,
+                style = MaterialTheme.typography.bodySmall
+            )
+            syncInfo.lastCheckedAtMillis?.let { timestamp ->
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "上次检查：${formatHolidayCheckTime(timestamp)}",
+                    color = DaoDianLaColors.muted,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            syncInfo.lastMessage?.let { message ->
+                Spacer(Modifier.height(4.dp))
+                Text(message, color = DaoDianLaColors.muted, style = MaterialTheme.typography.labelSmall)
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onCheck,
+                enabled = !checking,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(13.dp)
+            ) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (checking) "正在检查…" else "检查节假日更新")
+            }
+        }
+    }
+}
+
+private fun formatHolidayCheckTime(timestamp: Long): String =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.CHINA)
+        .withZone(ZoneId.systemDefault())
+        .format(Instant.ofEpochMilli(timestamp))
 
 @Composable
 private fun ExportSettingsCard(
