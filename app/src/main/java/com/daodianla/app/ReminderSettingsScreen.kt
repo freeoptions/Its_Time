@@ -20,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.BatterySaver
 import androidx.compose.material.icons.outlined.CheckCircleOutline
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileDownload
@@ -30,7 +29,6 @@ import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -78,8 +76,7 @@ fun ReminderSettingsScreen(
     onOpenAutostartSettings: () -> Unit,
     onOpenBatterySettings: () -> Unit,
     onManualCheckChanged: (ManualReliabilityCheck, Boolean) -> Unit,
-    onCopyLogs: () -> Unit,
-    onShareLogs: () -> Unit,
+    onOpenDiagnosticLogs: () -> Unit,
     exportDirectoryPath: String?,
     reminderCount: Int,
     exportInProgress: Boolean,
@@ -87,8 +84,6 @@ fun ReminderSettingsScreen(
     onClearExportDirectory: () -> Unit,
     onExportReminders: () -> Unit
 ) {
-    var copied by remember { mutableStateOf(false) }
-
     Scaffold(
         containerColor = DaoDianLaColors.background,
         topBar = {
@@ -112,7 +107,6 @@ fun ReminderSettingsScreen(
                 actions = {
                     IconButton(
                         onClick = {
-                            copied = false
                             onRefresh()
                         }
                     ) {
@@ -233,16 +227,11 @@ fun ReminderSettingsScreen(
                 )
             }
 
-            item { SettingsSectionTitle("诊断日志", "漏提醒时复制给开发者排查") }
+            item { SettingsSectionTitle("诊断日志", "先看易懂摘要，需要时再打开完整记录") }
             item {
                 DiagnosticLogCard(
                     logs = logs,
-                    copied = copied,
-                    onCopy = {
-                        onCopyLogs()
-                        copied = true
-                    },
-                    onShare = onShareLogs
+                    onOpen = onOpenDiagnosticLogs
                 )
             }
         }
@@ -615,9 +604,7 @@ private fun SettingStatusCard(
 @Composable
 private fun DiagnosticLogCard(
     logs: List<ReminderLogEntry>,
-    copied: Boolean,
-    onCopy: () -> Unit,
-    onShare: () -> Unit
+    onOpen: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -646,7 +633,7 @@ private fun DiagnosticLogCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text("最近事件", color = DaoDianLaColors.ink, fontWeight = FontWeight.Bold)
                     Text(
-                        "本机最多保存 120 条，不记录提醒内容",
+                        "最多保存 120 条；这里仅显示最近 3 条",
                         color = DaoDianLaColors.muted,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -657,32 +644,21 @@ private fun DiagnosticLogCard(
             if (logs.isEmpty()) {
                 Text("暂无事件日志", color = DaoDianLaColors.muted, style = MaterialTheme.typography.bodySmall)
             } else {
-                logs.forEachIndexed { index, entry ->
+                logs.take(3).forEachIndexed { index, entry ->
                     if (index > 0) Spacer(Modifier.height(10.dp))
                     LogEntryRow(entry)
                 }
             }
 
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
-                    onClick = onCopy,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(13.dp)
-                ) {
-                    Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (copied) "已复制" else "复制日志")
-                }
-                OutlinedButton(
-                    onClick = onShare,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(13.dp)
-                ) {
-                    Icon(Icons.Outlined.Share, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("分享日志")
-                }
+            OutlinedButton(
+                onClick = onOpen,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(13.dp)
+            ) {
+                Icon(Icons.Outlined.Description, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("查看完整日志")
             }
         }
     }
@@ -697,25 +673,21 @@ private fun LogEntryRow(entry: ReminderLogEntry) {
                 .size(7.dp)
                 .clip(CircleShape)
                 .background(
-                    if (entry.type in setOf(
-                            ReminderLogType.SCHEDULE_FAILED,
-                            ReminderLogType.NOTIFICATION_FAILED
-                        )
-                    ) DaoDianLaColors.warning else DaoDianLaColors.blue
+                    if (entry.isIssue()) DaoDianLaColors.warning else DaoDianLaColors.blue
                 )
         )
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    entry.type.label,
+                    entry.readableTitle(),
                     color = DaoDianLaColors.ink,
                     fontWeight = FontWeight.SemiBold,
                     style = MaterialTheme.typography.labelLarge
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
-                    ReminderEventLog.formatTimestamp(entry.timestamp).substring(5),
+                    ReminderEventLog.formatTimestamp(entry.timestamp).substring(5, 16),
                     color = DaoDianLaColors.muted,
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace
@@ -723,7 +695,7 @@ private fun LogEntryRow(entry: ReminderLogEntry) {
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                entry.details,
+                entry.readableDetails(),
                 color = DaoDianLaColors.muted,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 3,

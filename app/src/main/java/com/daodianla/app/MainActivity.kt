@@ -134,6 +134,9 @@ private fun DaoDianLaApp() {
     var eventLogs by remember {
         mutableStateOf(ReminderEventLog.entries(context, 20))
     }
+    var allEventLogs by remember {
+        mutableStateOf(ReminderEventLog.entries(context, 120))
+    }
     var holidaySyncInfo by remember {
         mutableStateOf(HolidayCalendarSync.info(context))
     }
@@ -141,6 +144,7 @@ private fun DaoDianLaApp() {
     var editorReminder by remember { mutableStateOf<Reminder?>(null) }
     var editorVisible by remember { mutableStateOf(false) }
     var settingsVisible by remember { mutableStateOf(false) }
+    var logScreenVisible by remember { mutableStateOf(false) }
     var exportDirectoryUri by remember {
         mutableStateOf(ReminderExportManager.getExportDirectory(context))
     }
@@ -164,6 +168,7 @@ private fun DaoDianLaApp() {
         diagnostics = ReminderDiagnostics.snapshot(context)
         systemStatus = ReminderSystemSettings.status(context)
         eventLogs = ReminderEventLog.entries(context, 20)
+        allEventLogs = ReminderEventLog.entries(context, 120)
         holidaySyncInfo = HolidayCalendarSync.info(context)
     }
 
@@ -340,15 +345,24 @@ private fun DaoDianLaApp() {
         refresh()
     }
 
-    BackHandler(enabled = settingsVisible || editorVisible) {
+    BackHandler(enabled = settingsVisible || editorVisible || logScreenVisible) {
         when {
+            logScreenVisible -> logScreenVisible = false
             settingsVisible -> settingsVisible = false
             editorVisible -> editorVisible = false
         }
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = DaoDianLaColors.background) {
-        if (settingsVisible) {
+        if (logScreenVisible) {
+            ReminderLogScreen(
+                logs = allEventLogs,
+                onBack = { logScreenVisible = false },
+                onRefresh = { refresh() },
+                onCopy = { ReminderSystemSettings.copyDiagnosticReport(context) },
+                onShare = { ReminderSystemSettings.shareDiagnosticReport(context) }
+            )
+        } else if (settingsVisible) {
             ReminderSettingsScreen(
                 status = systemStatus,
                 logs = eventLogs,
@@ -373,11 +387,9 @@ private fun DaoDianLaApp() {
                     ReminderSystemSettings.setManualCheck(context, check, confirmed)
                     refresh()
                 },
-                onCopyLogs = {
-                    ReminderSystemSettings.copyDiagnosticReport(context)
-                },
-                onShareLogs = {
-                    ReminderSystemSettings.shareDiagnosticReport(context)
+                onOpenDiagnosticLogs = {
+                    allEventLogs = ReminderEventLog.entries(context, 120)
+                    logScreenVisible = true
                 },
                 exportDirectoryPath = readableExportDirectory,
                 reminderCount = reminders.size,
