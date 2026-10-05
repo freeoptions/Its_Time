@@ -28,13 +28,13 @@ fun ReminderLogScreen(
     logs: List<ReminderLogEntry>,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
-    onCopy: () -> Unit,
-    onShare: () -> Unit
+    onCopyEntry: (ReminderLogEntry) -> Unit
 ) {
     val listState = rememberLazyListState()
     var filterIndex by rememberSaveable { mutableIntStateOf(0) }
     var currentPage by rememberSaveable { mutableIntStateOf(0) }
     var pageMenuExpanded by remember { mutableStateOf(false) }
+    var copiedEntryKey by remember { mutableStateOf<String?>(null) }
     val filter = ReminderLogFilter.values()[filterIndex.coerceIn(0, ReminderLogFilter.values().lastIndex)]
     val filteredLogs = remember(logs, filter) { logs.filter { it.matches(filter) } }
     val pageCount = (filteredLogs.size + LOG_PAGE_SIZE - 1) / LOG_PAGE_SIZE
@@ -61,8 +61,6 @@ fun ReminderLogScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onCopy) { Icon(Icons.Outlined.ContentCopy, "复制日志", tint = DaoDianLaColors.blue) }
-                    IconButton(onClick = onShare) { Icon(Icons.Outlined.Share, "分享日志", tint = DaoDianLaColors.blue) }
                     IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "刷新日志", tint = DaoDianLaColors.blue) }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = DaoDianLaColors.background)
@@ -74,7 +72,12 @@ fun ReminderLogScreen(
             LogPageContent(
                 logs = logs,
                 pageLogs = pageLogs,
-                listState = listState
+                listState = listState,
+                copiedEntryKey = copiedEntryKey,
+                onCopyEntry = { entry ->
+                    onCopyEntry(entry)
+                    copiedEntryKey = entry.copyKey()
+                }
             )
             if (pageCount > 1) {
                 ReminderLogPagination(
@@ -113,7 +116,9 @@ private fun LogFilterRow(filterIndex: Int, onFilterChange: (Int) -> Unit) {
 private fun ColumnScope.LogPageContent(
     logs: List<ReminderLogEntry>,
     pageLogs: List<ReminderLogEntry>,
-    listState: LazyListState
+    listState: LazyListState,
+    copiedEntryKey: String?,
+    onCopyEntry: (ReminderLogEntry) -> Unit
 ) {
     if (pageLogs.isEmpty()) {
         Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
@@ -127,7 +132,11 @@ private fun ColumnScope.LogPageContent(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             itemsIndexed(pageLogs, key = { index, entry -> "${entry.timestamp}-${index}" }) { _, entry ->
-                ReminderLogItem(entry)
+                ReminderLogItem(
+                    entry = entry,
+                    copied = copiedEntryKey == entry.copyKey(),
+                    onCopy = { onCopyEntry(entry) }
+                )
             }
         }
     }
@@ -187,7 +196,11 @@ private fun ReminderLogPagination(
 }
 
 @Composable
-private fun ReminderLogItem(entry: ReminderLogEntry) {
+private fun ReminderLogItem(
+    entry: ReminderLogEntry,
+    copied: Boolean,
+    onCopy: () -> Unit
+) {
     val issue = entry.isIssue()
     val accent = if (issue) DaoDianLaColors.warning else DaoDianLaColors.blue
     Card(
@@ -213,6 +226,17 @@ private fun ReminderLogItem(entry: ReminderLogEntry) {
                     color = DaoDianLaColors.muted,
                     style = MaterialTheme.typography.labelSmall
                 )
+                IconButton(
+                    onClick = onCopy,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+                        contentDescription = if (copied) "已复制" else "复制这一条日志",
+                        tint = if (copied) DaoDianLaColors.blue else DaoDianLaColors.muted,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
             }
             Spacer(Modifier.height(7.dp))
             Text(
@@ -246,11 +270,13 @@ internal fun ReminderLogEntry.isIssue(): Boolean = type in setOf(
     ReminderLogType.NOTIFICATION_FAILED
 ) || (type == ReminderLogType.SYSTEM_EVENT && (details.contains("失败") || details.contains("异常")))
 
+private fun ReminderLogEntry.copyKey(): String = "$timestamp-${reminderId ?: 0}-${type.name}"
+
 internal fun ReminderLogEntry.readableTitle(): String = when (type) {
     ReminderLogType.PROCESS_STARTED -> "应用进程启动"
     ReminderLogType.APP_FOREGROUND -> "进入应用"
     ReminderLogType.RECONCILE -> "重新核对提醒"
-    ReminderLogType.SCHEDULED -> "已提交系统闹钟"
+    ReminderLogType.SCHEDULED -> "系统闹钟已登记"
     ReminderLogType.SCHEDULE_FAILED -> "系统闹钟提交失败"
     ReminderLogType.ALARM_FIRED -> "系统闹钟已触发"
     ReminderLogType.NOTIFICATION_POSTED -> "通知已发布"
@@ -265,13 +291,15 @@ internal fun ReminderLogEntry.readableDetails(): String = when (type) {
     ReminderLogType.APP_FOREGROUND -> "你打开了应用，应用会重新核对已有提醒。"
     ReminderLogType.RECONCILE -> "应用已重新核对提醒并更新系统闹钟。"
     ReminderLogType.SCHEDULED -> if (details.contains("exact=true")) {
-        "系统已接收精确唤醒提醒。"
+        "系统已接收精确唤醒提醒${details.detailValue("source")?.let { "（${scheduleSourceLabel(it)}）" }.orEmpty()}；这是重新登记，不是重复通知。"
     } else {
-        "系统已接收提醒，但当前使用的是普通待机唤醒。"
+        "系统已接收提醒，但当前使用的是普通待机唤醒${details.detailValue("source")?.let { "（${scheduleSourceLabel(it)}）" }.orEmpty()}。"
     }
     ReminderLogType.SCHEDULE_FAILED -> "提醒没有成功交给系统：${details.substringAfter("error=", details).take(140)}"
     ReminderLogType.ALARM_FIRED -> "到点啦，系统已经进入提醒投递流程。"
-    ReminderLogType.NOTIFICATION_POSTED -> "通知已交给系统显示。"
+    ReminderLogType.NOTIFICATION_POSTED -> details.detailValue("content")?.let {
+        "已交给系统显示：$it"
+    } ?: "通知已交给系统显示。"
     ReminderLogType.NOTIFICATION_FAILED -> "通知没有显示：${details.substringAfter("error=", details).take(140)}"
     ReminderLogType.SYSTEM_EVENT -> when {
         details.contains("启动失败") -> "短时提醒服务启动失败，应用已尝试直接投递通知。"
@@ -280,4 +308,22 @@ internal fun ReminderLogEntry.readableDetails(): String = when (type) {
     }
     ReminderLogType.USER_ACTION -> details.take(140)
     ReminderLogType.SETTINGS_CHECK -> "已检查提醒相关设置。"
+}
+
+private fun String.detailValue(key: String): String? {
+    val marker = "$key="
+    val start = indexOf(marker)
+    if (start < 0) return null
+    return substring(start + marker.length)
+        .substringBefore("；")
+        .trim()
+        .takeIf { it.isNotEmpty() }
+}
+
+private fun scheduleSourceLabel(source: String): String = when (source) {
+    "USER_SAVE" -> "保存提醒"
+    "APP_FOREGROUND_RECONCILE" -> "打开应用核对"
+    "SYSTEM_RESTORE" -> "系统恢复核对"
+    "REPEAT_NEXT" -> "重复提醒续排"
+    else -> source
 }

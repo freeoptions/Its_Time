@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
+import java.time.LocalDate
 
 class ReminderRepository(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -67,6 +68,9 @@ class ReminderRepository(context: Context) {
                     put("repeatMode", reminder.repeatMode.name)
                     put("enabled", reminder.enabled)
                     reminder.triggerAtMillis?.let { put("triggerAtMillis", it) }
+                    put("selectedDates", JSONArray().apply {
+                        reminder.selectedDates.sorted().forEach { put(it.toString()) }
+                    })
                 }
             )
         }
@@ -83,7 +87,20 @@ class ReminderRepository(context: Context) {
             RepeatMode.valueOf(getString("repeatMode"))
         }.getOrDefault(RepeatMode.ONCE),
         enabled = optBoolean("enabled", true),
-        triggerAtMillis = optLong("triggerAtMillis", 0L).takeIf { it > 0L }
+        triggerAtMillis = optLong("triggerAtMillis", 0L).takeIf { it > 0L },
+        selectedDates = optJSONArray("selectedDates")
+            ?.let { array ->
+                buildList(array.length()) {
+                    for (index in 0 until array.length()) {
+                        runCatching { LocalDate.parse(array.getString(index)) }
+                            .getOrNull()
+                            ?.let(::add)
+                    }
+                }
+            }
+            .orEmpty()
+            .distinct()
+            .sorted()
     )
 
     private companion object {

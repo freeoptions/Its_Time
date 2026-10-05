@@ -4,14 +4,18 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import java.util.Calendar
+import java.time.LocalDate
+import java.time.ZoneId
 
 object ReminderScheduler {
     const val ACTION_FIRE = "com.daodianla.app.action.FIRE_REMINDER"
     const val ACTION_MARK_DONE = "com.daodianla.app.action.MARK_REMINDER_DONE"
     const val EXTRA_REMINDER_ID = "extra_reminder_id"
     const val EXTRA_DELIVERY_SOURCE = "extra_delivery_source"
+    const val EXTRA_OCCURRENCE_EPOCH_DAY = "extra_occurrence_epoch_day"
     private const val MISSED_REMINDER_DELAY_MILLIS = 1_000L
 
     fun schedule(
@@ -22,6 +26,11 @@ object ReminderScheduler {
     ) {
         if (!reminder.enabled) {
             cancel(context, reminder)
+            return
+        }
+
+        if (reminder.repeatMode == RepeatMode.SELECTED_DATES) {
+            scheduleSelectedDates(context, reminder, fromMillis, source)
             return
         }
 
@@ -81,6 +90,65 @@ object ReminderScheduler {
         }
     }
 
+    private fun scheduleSelectedDates(
+        context: Context,
+        reminder: Reminder,
+        fromMillis: Long,
+        source: ReminderScheduleSource
+   ) {
+        val alarmManager = context.getSystemService(AlarmManager::class.java)
+       reminder.selectedDates
+           .distinct()
+           .sorted()
+           .map { date -> date to selectedDateTriggerMillis(reminder, date) }
+           .filter { (_, triggerAtMillis) -> triggerAtMillis > fromMillis }
+           .forEach { (date, triggerAtMillis) ->
+               val pendingIntent = alarmPendingIntent(
+                   context,
+                   reminder,
+                   ReminderDeliverySource.SYSTEM_ALARM,
+                   date
+               )
+               val requestedTriggerAtMillis = triggerAtMillis
+               if (canScheduleExactAlarms(context)) {
+                   val exactResult = runCatching {
+                       alarmManager.setExactAndAllowWhileIdle(
+                           AlarmManager.RTC_WAKEUP,
+                           triggerAtMillis,
+                           pendingIntent
+                       )
+                   }
+                   if (exactResult.isSuccess) {
+                       ReminderDiagnostics.recordScheduled(
+                           context,
+                           reminder.id,
+                           requestedTriggerAtMillis,
+                           triggerAtMillis,
+                           exact = true,
+                           source = source
+                       )
+                       ReminderEventLog.append(
+                           context,
+                           ReminderLogType.SCHEDULED,
+                           "exact=true；api=SET_EXACT_AND_ALLOW_WHILE_IDLE；source=${source.name}；requested=$requestedTriggerAtMillis；target=$triggerAtMillis；date=$date",
+                           reminder.id
+                       )
+                       return@forEach
+                   }
+               }
+
+               scheduleInexactSafely(
+                   context,
+                   alarmManager,
+                   reminder.id,
+                   requestedTriggerAtMillis,
+                   triggerAtMillis,
+                   pendingIntent,
+                   source
+               )
+           }
+   }
+
     /**
      * 在应用回到前台、系统重启或应用升级后重新核对全部提醒。
      * 同一个 PendingIntent 会被系统替换，不会产生重复闹钟。
@@ -102,11 +170,18 @@ object ReminderScheduler {
 
     /** 保存单次提醒时固定绝对时间，避免进程重建后被错误推迟到下一天。 */
     fun prepareForSave(reminder: Reminder, fromMillis: Long = System.currentTimeMillis()): Reminder {
-        return if (reminder.repeatMode == RepeatMode.ONCE && reminder.enabled) {
-            val triggerAt = nextWallClockOccurrence(reminder, fromMillis)
-            reminder.copy(triggerAtMillis = triggerAt)
-        } else {
-            reminder.copy(triggerAtMillis = null)
+        return when {
+            reminder.repeatMode == RepeatMode.ONCE && reminder.enabled -> {
+                val triggerAt = nextWallClockOccurrence(reminder, fromMillis)
+                reminder.copy(triggerAtMillis = triggerAt, selectedDates = emptyList())
+            }
+            reminder.repeatMode == RepeatMode.SELECTED_DATES -> {
+                reminder.copy(
+                    triggerAtMillis = null,
+                    selectedDates = reminder.selectedDates.distinct().sorted()
+                )
+            }
+            else -> reminder.copy(triggerAtMillis = null, selectedDates = emptyList())
         }
     }
 
@@ -169,13 +244,24 @@ object ReminderScheduler {
     }
 
     fun cancel(context: Context, reminder: Reminder) {
-        context.getSystemService(AlarmManager::class.java)
-            .cancel(alarmPendingIntent(context, reminder))
+        val alarmManager = context.getSystemService(AlarmManager::class.java)
+        alarmManager.cancel(alarmPendingIntent(context, reminder))
+        reminder.selectedDates.distinct().forEach { date ->
+            alarmManager.cancel(alarmPendingIntent(context, reminder, selectedDate = date))
+        }
     }
 
     fun nextTriggerMillis(reminder: Reminder, fromMillis: Long): Long {
         if (reminder.repeatMode == RepeatMode.ONCE) {
             reminder.triggerAtMillis?.let { return it }
+        }
+
+        if (reminder.repeatMode == RepeatMode.SELECTED_DATES) {
+            return reminder.selectedDates
+                .map { selectedDateTriggerMillis(reminder, it) }
+                .filter { it > fromMillis }
+                .minOrNull()
+                ?: Long.MAX_VALUE
         }
 
         return nextWallClockOccurrence(reminder, fromMillis)
@@ -227,22 +313,38 @@ object ReminderScheduler {
         return candidate.timeInMillis
     }
 
+    private fun selectedDateTriggerMillis(reminder: Reminder, date: LocalDate): Long = date
+        .atTime(reminder.hour, reminder.minute)
+        .atZone(ZoneId.systemDefault())
+        .toInstant()
+        .toEpochMilli()
+
     private fun alarmPendingIntent(
         context: Context,
         reminder: Reminder,
-        deliverySource: ReminderDeliverySource = ReminderDeliverySource.SYSTEM_ALARM
+        deliverySource: ReminderDeliverySource = ReminderDeliverySource.SYSTEM_ALARM,
+        selectedDate: LocalDate? = null
     ): PendingIntent {
         val intent = Intent(context, ReminderAlarmReceiver::class.java).apply {
             action = ACTION_FIRE
             putExtra(EXTRA_REMINDER_ID, reminder.id)
             putExtra(EXTRA_DELIVERY_SOURCE, deliverySource.name)
+            selectedDate?.let { putExtra(EXTRA_OCCURRENCE_EPOCH_DAY, it.toEpochDay()) }
+            selectedDate?.let { data = Uri.parse("daodianla://reminder/${reminder.id}/${it.toEpochDay()}") }
         }
         return PendingIntent.getBroadcast(
             context,
-            reminder.notificationId,
+            occurrenceRequestCode(reminder, selectedDate),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
+
+    private fun occurrenceRequestCode(reminder: Reminder, selectedDate: LocalDate?): Int {
+        if (selectedDate == null) return reminder.notificationId
+        val epochDay = selectedDate.toEpochDay()
+        val foldedDay = (epochDay xor (epochDay ushr 32)).toInt()
+        return reminder.notificationId * 31 + foldedDay
     }
 
 }

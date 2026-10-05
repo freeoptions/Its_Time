@@ -81,15 +81,32 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
         deliverySource: ReminderDeliverySource
     ) {
         // 先持久化完成状态或下一次闹钟，再显示通知；即使通知层异常也不会破坏调度链。
-        if (reminder.repeatMode == RepeatMode.ONCE) {
-            repository.save(reminder.copy(enabled = false))
-        } else {
-            ReminderScheduler.schedule(
-                context,
-                reminder,
-                System.currentTimeMillis() + 60_000L,
-                ReminderScheduleSource.REPEAT_NEXT
-            )
+        when (reminder.repeatMode) {
+            RepeatMode.ONCE -> repository.save(reminder.copy(enabled = false))
+            RepeatMode.SELECTED_DATES -> {
+                val nextTriggerAt = ReminderScheduler.nextTriggerMillis(
+                    reminder,
+                    System.currentTimeMillis()
+                )
+                if (nextTriggerAt == Long.MAX_VALUE) {
+                    repository.save(reminder.copy(enabled = false))
+                } else {
+                    ReminderScheduler.schedule(
+                        context,
+                        reminder,
+                        System.currentTimeMillis() + 1_000L,
+                        ReminderScheduleSource.REPEAT_NEXT
+                    )
+                }
+            }
+            else -> {
+                ReminderScheduler.schedule(
+                    context,
+                    reminder,
+                    System.currentTimeMillis() + 60_000L,
+                    ReminderScheduleSource.REPEAT_NEXT
+                )
+            }
         }
         ReminderEventLog.append(
             context,
@@ -142,7 +159,7 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
             ReminderEventLog.append(
                 context,
                 ReminderLogType.NOTIFICATION_FAILED,
-                "通知权限或提醒渠道未开启",
+                    "content=${reminder.title}；通知权限或提醒渠道未开启",
                 reminder.id
             )
             return
@@ -155,7 +172,7 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
             ReminderEventLog.append(
                 context,
                 ReminderLogType.NOTIFICATION_POSTED,
-                "通知已提交给系统；notificationId=${reminder.notificationId}",
+                "content=${reminder.title}；notificationId=${reminder.notificationId}",
                 reminder.id
             )
         }.onFailure {
@@ -163,7 +180,7 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
             ReminderEventLog.append(
                 context,
                 ReminderLogType.NOTIFICATION_FAILED,
-                "error=${it.message ?: "通知发送失败"}",
+                "content=${reminder.title}；error=${it.message ?: "通知发送失败"}",
                 reminder.id
             )
         }
@@ -177,10 +194,25 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
             "从通知栏划除并标记完成",
             reminder.id
         )
-        if (reminder.repeatMode == RepeatMode.ONCE) {
-            repository.save(reminder.copy(enabled = false))
-        } else {
-            ReminderScheduler.schedule(
+        when (reminder.repeatMode) {
+            RepeatMode.ONCE -> repository.save(reminder.copy(enabled = false))
+            RepeatMode.SELECTED_DATES -> {
+                val nextTriggerAt = ReminderScheduler.nextTriggerMillis(
+                    reminder,
+                    System.currentTimeMillis()
+                )
+                if (nextTriggerAt == Long.MAX_VALUE) {
+                    repository.save(reminder.copy(enabled = false))
+                } else {
+                    ReminderScheduler.schedule(
+                        context,
+                        reminder,
+                        System.currentTimeMillis() + 1_000L,
+                        ReminderScheduleSource.REPEAT_NEXT
+                    )
+                }
+            }
+            else -> ReminderScheduler.schedule(
                 context,
                 reminder,
                 System.currentTimeMillis() + 1_000L,

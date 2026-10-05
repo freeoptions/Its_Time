@@ -192,6 +192,18 @@ object ReminderSystemSettings {
         )
     }
 
+    fun copyDiagnosticEntry(context: Context, entry: ReminderLogEntry) {
+        val readableEntry = buildString {
+            append(ReminderEventLog.formatTimestamp(entry.timestamp))
+            append(" | ${entry.readableTitle()}")
+            entry.reminderId?.let { append(" | reminderId=$it") }
+            append(" | ${entry.readableDetails()}")
+        }
+        context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
+            ClipData.newPlainText("到点啦单条日志", readableEntry)
+        )
+    }
+
     fun shareDiagnosticReport(context: Context) {
         context.startActivity(
             Intent.createChooser(

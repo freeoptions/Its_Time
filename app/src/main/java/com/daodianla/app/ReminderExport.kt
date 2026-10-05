@@ -126,5 +126,8 @@ object ReminderExportManager {
         put("repeatMode", repeatMode.name)
         put("enabled", enabled)
         triggerAtMillis?.let { put("triggerAtMillis", it) }
+        put("selectedDates", JSONArray().apply {
+            selectedDates.sorted().forEach { put(it.toString()) }
+        })
     }
 }

@@ -3,7 +3,6 @@ package com.daodianla.app
 import android.Manifest
 import android.app.TimePickerDialog
 import android.content.Intent
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -38,6 +37,7 @@ import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircleOutline
+import androidx.compose.material.icons.outlined.DateRange
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Repeat
@@ -73,10 +73,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
@@ -91,6 +93,7 @@ import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
+import java.time.YearMonth
 import java.util.Calendar
 import java.util.Locale
 
@@ -122,17 +125,8 @@ private fun DaoDianLaApp() {
     val exportScope = rememberCoroutineScope()
     val repository = remember { ReminderRepository(context.applicationContext) }
     var reminders by remember { mutableStateOf(repository.getAll()) }
-    var reliabilityStatus by remember {
-        mutableStateOf(ReminderNotifications.status(context))
-    }
-    var diagnostics by remember {
-        mutableStateOf(ReminderDiagnostics.snapshot(context))
-    }
     var systemStatus by remember {
         mutableStateOf(ReminderSystemSettings.status(context))
-    }
-    var eventLogs by remember {
-        mutableStateOf(ReminderEventLog.entries(context, 20))
     }
     var allEventLogs by remember {
         mutableStateOf(ReminderEventLog.entries(context, 120))
@@ -145,6 +139,7 @@ private fun DaoDianLaApp() {
     var editorVisible by remember { mutableStateOf(false) }
     var settingsVisible by remember { mutableStateOf(false) }
     var logScreenVisible by remember { mutableStateOf(false) }
+    var lastReconcileAtMillis by remember { mutableStateOf(0L) }
     var exportDirectoryUri by remember {
         mutableStateOf(ReminderExportManager.getExportDirectory(context))
     }
@@ -156,18 +151,18 @@ private fun DaoDianLaApp() {
     fun refresh(reconcile: Boolean = false) {
         ReminderNotifications.ensureChannel(context)
         val currentReminders = repository.getAll()
-        if (reconcile) {
+        val now = System.currentTimeMillis()
+        val shouldReconcile = reconcile && now - lastReconcileAtMillis >= 30_000L
+        if (shouldReconcile) {
             ReminderScheduler.reconcile(
                 context,
                 currentReminders,
                 ReminderScheduleSource.APP_FOREGROUND_RECONCILE
             )
+            lastReconcileAtMillis = now
         }
         reminders = currentReminders
-        reliabilityStatus = ReminderNotifications.status(context)
-        diagnostics = ReminderDiagnostics.snapshot(context)
         systemStatus = ReminderSystemSettings.status(context)
-        eventLogs = ReminderEventLog.entries(context, 20)
         allEventLogs = ReminderEventLog.entries(context, 120)
         holidaySyncInfo = HolidayCalendarSync.info(context)
     }
@@ -296,21 +291,17 @@ private fun DaoDianLaApp() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    DisposableEffect(context) {
-        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-            diagnostics = ReminderDiagnostics.snapshot(context)
-        }
-        ReminderDiagnostics.registerChangeListener(context, listener)
-        onDispose { ReminderDiagnostics.unregisterChangeListener(context, listener) }
-    }
-
     fun saveReminder(reminder: Reminder) {
+        repository.getById(reminder.id)?.let { existingReminder ->
+            // 编辑指定日期提醒时，先撤销旧日期的闹钟，避免被删除的日期仍然触发。
+            ReminderScheduler.cancel(context, existingReminder)
+        }
         val preparedReminder = ReminderScheduler.prepareForSave(reminder)
         repository.save(preparedReminder)
         ReminderEventLog.append(
             context,
             ReminderLogType.USER_ACTION,
-            "保存提醒；enabled=${preparedReminder.enabled}；repeat=${preparedReminder.repeatMode.name}",
+            "保存提醒；enabled=${preparedReminder.enabled}；repeat=${preparedReminder.repeatMode.name}；dates=${preparedReminder.selectedDates.size}",
             preparedReminder.id
         )
         if (preparedReminder.enabled) {
@@ -345,6 +336,31 @@ private fun DaoDianLaApp() {
         refresh()
     }
 
+    fun toggleReminderEnabled(reminder: Reminder, enabled: Boolean) {
+        val updatedReminder = ReminderScheduler.prepareForSave(
+            reminder.copy(enabled = enabled)
+        )
+        repository.save(updatedReminder)
+        if (enabled) {
+            ReminderScheduler.schedule(context, updatedReminder)
+        } else {
+            ReminderScheduler.cancel(context, reminder)
+            NotificationManagerCompat.from(context).cancel(reminder.notificationId)
+        }
+        ReminderEventLog.append(
+            context,
+            ReminderLogType.USER_ACTION,
+            if (enabled) "启用提醒" else "禁用提醒",
+            reminder.id
+        )
+        refresh()
+    }
+
+    fun openDiagnosticLogs() {
+        allEventLogs = ReminderEventLog.entries(context, 120)
+        logScreenVisible = true
+    }
+
     BackHandler(enabled = settingsVisible || editorVisible || logScreenVisible) {
         when {
             logScreenVisible -> logScreenVisible = false
@@ -359,13 +375,13 @@ private fun DaoDianLaApp() {
                 logs = allEventLogs,
                 onBack = { logScreenVisible = false },
                 onRefresh = { refresh() },
-                onCopy = { ReminderSystemSettings.copyDiagnosticReport(context) },
-                onShare = { ReminderSystemSettings.shareDiagnosticReport(context) }
+                onCopyEntry = { entry ->
+                    ReminderSystemSettings.copyDiagnosticEntry(context, entry)
+                }
             )
         } else if (settingsVisible) {
             ReminderSettingsScreen(
                 status = systemStatus,
-                logs = eventLogs,
                 holidaySyncInfo = holidaySyncInfo,
                 holidayCheckInProgress = holidayCheckInProgress,
                 onBack = { settingsVisible = false },
@@ -386,10 +402,6 @@ private fun DaoDianLaApp() {
                 onManualCheckChanged = { check, confirmed ->
                     ReminderSystemSettings.setManualCheck(context, check, confirmed)
                     refresh()
-                },
-                onOpenDiagnosticLogs = {
-                    allEventLogs = ReminderEventLog.entries(context, 120)
-                    logScreenVisible = true
                 },
                 exportDirectoryPath = readableExportDirectory,
                 reminderCount = reminders.size,
@@ -413,12 +425,11 @@ private fun DaoDianLaApp() {
         } else {
             HomeScreen(
                 reminders = reminders,
-                reliabilityStatus = reliabilityStatus,
-                diagnostics = diagnostics,
                 onOpenSettings = {
                     refresh()
                     settingsVisible = true
                 },
+                onOpenDiagnosticLogs = ::openDiagnosticLogs,
                 onAdd = {
                     editorReminder = null
                     editorVisible = true
@@ -428,12 +439,7 @@ private fun DaoDianLaApp() {
                     editorVisible = true
                 },
                 onDelete = ::deleteReminder,
-                onOpenNotificationSettings = {
-                    ReminderSystemSettings.openNotificationSettings(context)
-                },
-                onOpenExactAlarmSettings = {
-                    ReminderSystemSettings.openExactAlarmSettings(context)
-                }
+                onToggleReminderEnabled = ::toggleReminderEnabled
             )
         }
     }
@@ -443,20 +449,27 @@ private fun DaoDianLaApp() {
 @Composable
 private fun HomeScreen(
     reminders: List<Reminder>,
-    reliabilityStatus: ReminderReliabilityStatus,
-    diagnostics: ReminderDiagnosticsSnapshot,
     onOpenSettings: () -> Unit,
+    onOpenDiagnosticLogs: () -> Unit,
     onAdd: () -> Unit,
     onEdit: (Reminder) -> Unit,
     onDelete: (Reminder) -> Unit,
-    onOpenNotificationSettings: () -> Unit,
-    onOpenExactAlarmSettings: () -> Unit
+    onToggleReminderEnabled: (Reminder, Boolean) -> Unit
 ) {
     val enabledReminders = reminders.filter { it.enabled }
-    val nextReminder = enabledReminders.minByOrNull {
-        ReminderScheduler.nextTriggerMillis(it, System.currentTimeMillis())
-    }
+    val now = System.currentTimeMillis()
+    val nextReminder = enabledReminders
+        .mapNotNull { reminder ->
+            ReminderScheduler.nextTriggerMillis(reminder, now)
+                .takeIf { it != Long.MAX_VALUE }
+                ?.let { reminder }
+        }
+        .minByOrNull { ReminderScheduler.nextTriggerMillis(it, now) }
     val today = LocalDate.now()
+    val todayCalendar = Calendar.getInstance()
+    val lunarDate = LunarCalendarUtils.getLunarDate(todayCalendar.timeInMillis)
+    val lunarLabel = formatLunarDate(lunarDate)
+    val festivalName = findTodayFestival(todayCalendar, lunarDate)
 
     Scaffold(
         containerColor = DaoDianLaColors.background,
@@ -471,20 +484,24 @@ private fun HomeScreen(
                     )
                 },
                 navigationIcon = {
-                    Box(
-                        modifier = Modifier
-                            .padding(start = 18.dp)
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(DaoDianLaColors.blueTint),
-                        contentAlignment = Alignment.Center
+                    IconButton(
+                        onClick = onOpenDiagnosticLogs,
+                        modifier = Modifier.padding(start = 8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Schedule,
-                            contentDescription = null,
-                            tint = DaoDianLaColors.blue,
-                            modifier = Modifier.size(19.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(DaoDianLaColors.blueTint),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Schedule,
+                                contentDescription = "打开诊断日志",
+                                tint = DaoDianLaColors.blue,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -495,12 +512,6 @@ private fun HomeScreen(
                             tint = DaoDianLaColors.blue
                         )
                     }
-                    Text(
-                        text = "${enabledReminders.size} 条",
-                        modifier = Modifier.padding(end = 20.dp),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = DaoDianLaColors.muted
-                    )
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = DaoDianLaColors.background
@@ -535,11 +546,17 @@ private fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                Column(modifier = Modifier.padding(top = 10.dp)) {
+                Row(
+                    modifier = Modifier.padding(start = 0.dp, end = 0.dp, top = 4.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     Text(
                         text = today.format(DateTimeFormatter.ofPattern("M月d日")),
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.headlineSmall,
                         color = DaoDianLaColors.blue,
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
@@ -547,26 +564,36 @@ private fun HomeScreen(
                         style = MaterialTheme.typography.headlineMedium,
                         color = DaoDianLaColors.ink,
                         fontFamily = FontFamily.Serif,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
+                    Text(
+                        text = lunarLabel,
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = DaoDianLaColors.muted,
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    festivalName?.let { festival ->
+                        Text(
+                            text = festival,
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = DaoDianLaColors.blue,
+                            fontFamily = FontFamily.Serif,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
             item {
                 NextReminderCard(nextReminder)
-            }
-
-            item {
-                ReliabilityCard(
-                    status = reliabilityStatus,
-                    onOpenNotificationSettings = onOpenNotificationSettings,
-                    onOpenExactAlarmSettings = onOpenExactAlarmSettings
-                )
-            }
-
-
-            item {
-                ReminderDiagnosticsCard(diagnostics)
             }
 
             item {
@@ -596,7 +623,8 @@ private fun HomeScreen(
                     ReminderCard(
                         reminder = reminder,
                         onClick = { onEdit(reminder) },
-                        onDelete = { onDelete(reminder) }
+                        onDelete = { onDelete(reminder) },
+                        onToggleEnabled = { enabled -> onToggleReminderEnabled(reminder, enabled) }
                     )
                 }
             }
@@ -880,7 +908,12 @@ private fun EmptyState(onAdd: () -> Unit) {
 }
 
 @Composable
-private fun ReminderCard(reminder: Reminder, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun ReminderCard(
+    reminder: Reminder,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    onToggleEnabled: (Boolean) -> Unit
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -919,7 +952,19 @@ private fun ReminderCard(reminder: Reminder, onClick: () -> Unit, onDelete: () -
                     SmallMeta(Icons.Outlined.Repeat, repeatLabel(reminder.repeatMode))
                     SmallMeta(Icons.Outlined.AccessTime, "持续 ${reminder.durationHours} 小时")
                 }
+                if (reminder.repeatMode == RepeatMode.SELECTED_DATES) {
+                    Spacer(Modifier.height(5.dp))
+                    SmallMeta(
+                        Icons.Outlined.DateRange,
+                        formatSelectedDateSummary(reminder.selectedDates)
+                    )
+                }
             }
+            Switch(
+                checked = reminder.enabled,
+                onCheckedChange = onToggleEnabled,
+                modifier = Modifier.scale(0.8f)
+            )
             IconButton(onClick = onDelete) {
                 Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除提醒", tint = DaoDianLaColors.muted)
             }
@@ -948,8 +993,18 @@ private fun ReminderEditorScreen(
     var durationHours by remember(initialReminder?.id) { mutableStateOf(initialReminder?.durationHours ?: 1) }
     var repeatMode by remember(initialReminder?.id) { mutableStateOf(initialReminder?.repeatMode ?: RepeatMode.ONCE) }
     var enabled by remember(initialReminder?.id) { mutableStateOf(initialReminder?.enabled ?: true) }
+    var selectedDates by remember(initialReminder?.id) {
+        mutableStateOf(initialReminder?.selectedDates.orEmpty().distinct().sorted())
+    }
+    var displayedMonth by remember(initialReminder?.id) {
+        mutableStateOf(
+            initialReminder?.selectedDates?.minOrNull()?.let { YearMonth.from(it).coerceAtLeast(YearMonth.now()) }
+                ?: YearMonth.now()
+        )
+    }
     var showTimePicker by remember { mutableStateOf(false) }
     var titleError by remember { mutableStateOf(false) }
+    var dateSelectionError by remember { mutableStateOf<String?>(null) }
 
     if (showTimePicker) {
         androidx.compose.runtime.DisposableEffect(Unit) {
@@ -1075,21 +1130,26 @@ private fun ReminderEditorScreen(
                     Column {
                         Text("重复频率", color = DaoDianLaColors.ink, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            RepeatMode.values().forEach { mode ->
-                                FilterChip(
-                                    selected = repeatMode == mode,
-                                    onClick = { repeatMode = mode },
-                                    label = { Text(repeatLabel(mode)) },
-                                    leadingIcon = if (repeatMode == mode) {
-                                        { Icon(Icons.Outlined.CheckCircleOutline, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                    } else null,
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = DaoDianLaColors.blueTint,
-                                        selectedLabelColor = DaoDianLaColors.blue,
-                                        selectedLeadingIconColor = DaoDianLaColors.blue
+                        RepeatMode.values().toList().chunked(2).forEach { modes ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                modes.forEach { mode ->
+                                    FilterChip(
+                                        selected = repeatMode == mode,
+                                        onClick = { repeatMode = mode },
+                                        label = { Text(repeatLabel(mode)) },
+                                        leadingIcon = if (repeatMode == mode) {
+                                            { Icon(Icons.Outlined.CheckCircleOutline, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                        } else null,
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = DaoDianLaColors.blueTint,
+                                            selectedLabelColor = DaoDianLaColors.blue,
+                                            selectedLeadingIconColor = DaoDianLaColors.blue
+                                        )
                                     )
-                                )
+                                }
+                            }
+                            if (modes != RepeatMode.values().toList().chunked(2).last()) {
+                                Spacer(Modifier.height(8.dp))
                             }
                         }
                         Spacer(Modifier.height(7.dp))
@@ -1097,10 +1157,31 @@ private fun ReminderEditorScreen(
                             text = when (repeatMode) {
                                 RepeatMode.ONCE -> "今天设置一个还没到的时间，提醒一次"
                                 RepeatMode.DAILY -> "每天 ${formatTime(timeMinutes)} 提醒"
-                                RepeatMode.WEEKDAYS -> "法定工作日（含调休）${formatTime(timeMinutes)} 提醒"
+                               RepeatMode.WEEKDAYS -> "法定工作日（含调休）${formatTime(timeMinutes)} 提醒"
+                                RepeatMode.SELECTED_DATES -> "已选 " + selectedDates.size + " 个日期，按 " + formatTime(timeMinutes) + " 提醒"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = DaoDianLaColors.muted
+                        )
+                    }
+                }
+            }
+            if (repeatMode == RepeatMode.SELECTED_DATES) {
+                item {
+                    SettingCard {
+                        SpecificDateSelector(
+                            selectedDates = selectedDates,
+                            displayedMonth = displayedMonth,
+                            onDisplayedMonthChange = { displayedMonth = it },
+                            onDateToggle = { date ->
+                                selectedDates = if (date in selectedDates) {
+                                    selectedDates.filterNot { it == date }
+                                } else {
+                                    (selectedDates + date).distinct().sorted()
+                                }
+                                dateSelectionError = null
+                            },
+                            errorMessage = dateSelectionError
                         )
                     }
                 }
@@ -1110,8 +1191,8 @@ private fun ReminderEditorScreen(
                     SettingCard {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("开启提醒", color = DaoDianLaColors.ink, fontWeight = FontWeight.Bold)
-                                Text("关闭后不会在任务栏出现", color = DaoDianLaColors.muted, style = MaterialTheme.typography.bodySmall)
+                                Text("启用 / 禁用", color = DaoDianLaColors.ink, fontWeight = FontWeight.Bold)
+                                Text("启用后会在任务栏出现；禁用后暂停提醒", color = DaoDianLaColors.muted, style = MaterialTheme.typography.bodySmall)
                             }
                             Switch(checked = enabled, onCheckedChange = { enabled = it })
                         }
@@ -1123,6 +1204,10 @@ private fun ReminderEditorScreen(
                     onClick = {
                         if (title.isBlank()) {
                             titleError = true
+                        } else if (repeatMode == RepeatMode.SELECTED_DATES &&
+                            selectedDates.none { selectedDateTimeMillis(it, timeMinutes) > System.currentTimeMillis() }
+                        ) {
+                            dateSelectionError = "至少选择一个尚未到时间的未来日期"
                         } else {
                             onSave(
                                 Reminder(
@@ -1131,7 +1216,12 @@ private fun ReminderEditorScreen(
                                     timeMinutes = timeMinutes,
                                     durationHours = durationHours,
                                     repeatMode = repeatMode,
-                                    enabled = enabled
+                                    enabled = enabled,
+                                    selectedDates = if (repeatMode == RepeatMode.SELECTED_DATES) {
+                                        selectedDates.distinct().sorted()
+                                    } else {
+                                        emptyList()
+                                    }
                                 )
                             )
                         }
@@ -1167,7 +1257,8 @@ private fun SettingCard(content: @Composable () -> Unit) {
 private fun repeatLabel(mode: RepeatMode): String = when (mode) {
     RepeatMode.ONCE -> "仅一次"
     RepeatMode.DAILY -> "每天"
-    RepeatMode.WEEKDAYS -> "工作日"
+   RepeatMode.WEEKDAYS -> "工作日"
+    RepeatMode.SELECTED_DATES -> "指定日期"
 }
 
 private fun formatDateTime(timestamp: Long): String {
@@ -1211,6 +1302,17 @@ private fun formatClockWithSeconds(timestamp: Long): String {
 }
 
 private fun formatTime(timeMinutes: Int): String = "%02d:%02d".format(timeMinutes / 60, timeMinutes % 60)
+
+private fun selectedDateTimeMillis(date: LocalDate, timeMinutes: Int): Long = date
+    .atTime(timeMinutes / 60, timeMinutes % 60)
+    .atZone(java.time.ZoneId.systemDefault())
+    .toInstant()
+    .toEpochMilli()
+
+private fun formatSelectedDateSummary(dates: List<java.time.LocalDate>): String {
+    val visibleDates = dates.sorted().take(3).joinToString("、") { formatSelectedDate(it) }
+    return if (dates.size > 3) "$visibleDates 等 ${dates.size} 天" else visibleDates
+}
 
 private fun defaultTestTimeMinutes(): Int = Calendar.getInstance().apply {
     add(Calendar.MINUTE, 5)

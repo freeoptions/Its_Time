@@ -30,12 +30,13 @@ data class ReminderLogEntry(
 )
 
 /**
- * 本地滚动诊断日志。仅记录调度元数据，不记录提醒标题或其他用户内容。
+ * 本地滚动诊断日志。调度日志记录元数据；通知发布事件会附带通知内容，便于逐条核对。
  */
 object ReminderEventLog {
     private const val PREFERENCES_NAME = "reminder_event_log"
     private const val KEY_ENTRIES = "entries"
     private const val MAX_ENTRIES = 120
+    private const val FOREGROUND_RECONCILE_LOG_INTERVAL_MILLIS = 30 * 60 * 1000L
     private val timestampFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
 
     @Synchronized
@@ -48,6 +49,7 @@ object ReminderEventLog {
     ) {
         val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
         val existing = parseArray(preferences.getString(KEY_ENTRIES, null))
+        if (shouldThrottleForegroundReconcile(type, details, reminderId, timestamp, existing)) return
         existing.put(
             JSONObject().apply {
                 put("timestamp", timestamp)
@@ -63,6 +65,31 @@ object ReminderEventLog {
             existing.optJSONObject(index)?.let { trimmed.put(it) }
         }
         preferences.edit().putString(KEY_ENTRIES, trimmed.toString()).commit()
+    }
+
+    private fun shouldThrottleForegroundReconcile(
+        type: ReminderLogType,
+        details: String,
+        reminderId: Long?,
+        timestamp: Long,
+        existing: JSONArray
+    ): Boolean {
+        if (type != ReminderLogType.RECONCILE && type != ReminderLogType.SCHEDULED) return false
+        if (!details.contains("source=APP_FOREGROUND_RECONCILE")) return false
+
+        for (index in existing.length() - 1 downTo 0) {
+            val entry = existing.optJSONObject(index) ?: continue
+            if (entry.optString("type") != type.name) continue
+            if (type == ReminderLogType.SCHEDULED &&
+                entry.optLong("reminderId", 0L) != (reminderId ?: 0L)
+            ) continue
+            if (!entry.optString("details").contains("source=APP_FOREGROUND_RECONCILE")) continue
+
+            val lastTimestamp = entry.optLong("timestamp", 0L)
+            return timestamp >= lastTimestamp &&
+                timestamp - lastTimestamp < FOREGROUND_RECONCILE_LOG_INTERVAL_MILLIS
+        }
+        return false
     }
 
     fun entries(context: Context, limit: Int = 30): List<ReminderLogEntry> {

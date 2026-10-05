@@ -20,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.BatterySaver
 import androidx.compose.material.icons.outlined.CheckCircleOutline
-import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -52,7 +51,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,7 +63,6 @@ import java.util.Locale
 @Composable
 fun ReminderSettingsScreen(
     status: ReminderSystemStatus,
-    logs: List<ReminderLogEntry>,
     holidaySyncInfo: HolidayCalendarSyncInfo,
     holidayCheckInProgress: Boolean,
     onBack: () -> Unit,
@@ -76,7 +73,6 @@ fun ReminderSettingsScreen(
     onOpenAutostartSettings: () -> Unit,
     onOpenBatterySettings: () -> Unit,
     onManualCheckChanged: (ManualReliabilityCheck, Boolean) -> Unit,
-    onOpenDiagnosticLogs: () -> Unit,
     exportDirectoryPath: String?,
     reminderCount: Int,
     exportInProgress: Boolean,
@@ -227,13 +223,6 @@ fun ReminderSettingsScreen(
                 )
             }
 
-            item { SettingsSectionTitle("诊断日志", "先看易懂摘要，需要时再打开完整记录") }
-            item {
-                DiagnosticLogCard(
-                    logs = logs,
-                    onOpen = onOpenDiagnosticLogs
-                )
-            }
         }
     }
 }
@@ -597,110 +586,6 @@ private fun SettingStatusCard(
                 Spacer(Modifier.height(8.dp))
                 it()
             }
-        }
-    }
-}
-
-@Composable
-private fun DiagnosticLogCard(
-    logs: List<ReminderLogEntry>,
-    onOpen: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DaoDianLaColors.line),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(DaoDianLaColors.blueTint),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Outlined.Description,
-                        contentDescription = null,
-                        tint = DaoDianLaColors.blue,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("最近事件", color = DaoDianLaColors.ink, fontWeight = FontWeight.Bold)
-                    Text(
-                        "最多保存 120 条；这里仅显示最近 3 条",
-                        color = DaoDianLaColors.muted,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            if (logs.isEmpty()) {
-                Text("暂无事件日志", color = DaoDianLaColors.muted, style = MaterialTheme.typography.bodySmall)
-            } else {
-                logs.take(3).forEachIndexed { index, entry ->
-                    if (index > 0) Spacer(Modifier.height(10.dp))
-                    LogEntryRow(entry)
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
-            OutlinedButton(
-                onClick = onOpen,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(13.dp)
-            ) {
-                Icon(Icons.Outlined.Description, contentDescription = null, modifier = Modifier.size(17.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("查看完整日志")
-            }
-        }
-    }
-}
-
-@Composable
-private fun LogEntryRow(entry: ReminderLogEntry) {
-    Row(verticalAlignment = Alignment.Top) {
-        Box(
-            modifier = Modifier
-                .padding(top = 5.dp)
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(
-                    if (entry.isIssue()) DaoDianLaColors.warning else DaoDianLaColors.blue
-                )
-        )
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    entry.readableTitle(),
-                    color = DaoDianLaColors.ink,
-                    fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.labelLarge
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    ReminderEventLog.formatTimestamp(entry.timestamp).substring(5, 16),
-                    color = DaoDianLaColors.muted,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                entry.readableDetails(),
-                color = DaoDianLaColors.muted,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
         }
     }
 }

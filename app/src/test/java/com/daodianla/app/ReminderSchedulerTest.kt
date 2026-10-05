@@ -4,6 +4,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.util.Calendar
+import java.time.LocalDate
+import java.time.ZoneId
 
 class ReminderSchedulerTest {
     @Test
@@ -170,5 +172,39 @@ class ReminderSchedulerTest {
         )
 
         assertEquals(ReminderDeliverySource.SYSTEM_ALARM, source)
+    }
+
+    @Test
+    fun selectedDatesReminder_picksTheSoonestFutureDate() {
+        val today = LocalDate.now()
+        val now = today.atTime(9, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val reminder = Reminder(
+            id = 9L,
+            title = "测试",
+            timeMinutes = 10 * 60,
+            durationHours = 1,
+            repeatMode = RepeatMode.SELECTED_DATES,
+            selectedDates = listOf(today.plusDays(2), today.plusDays(1))
+        )
+        val next = ReminderScheduler.nextTriggerMillis(reminder, now)
+        val nextDate = java.time.Instant.ofEpochMilli(next)
+            .atZone(ZoneId.systemDefault())
+            .toLocalDate()
+        assertEquals(today.plusDays(1), nextDate)
+    }
+
+    @Test
+    fun selectedDatesReminder_returnsNoTriggerAfterTheLastDate() {
+        val yesterday = LocalDate.now().minusDays(1)
+        val now = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val reminder = Reminder(
+            id = 10L,
+            title = "测试",
+            timeMinutes = 10 * 60,
+            durationHours = 1,
+            repeatMode = RepeatMode.SELECTED_DATES,
+            selectedDates = listOf(yesterday)
+        )
+        assertEquals(Long.MAX_VALUE, ReminderScheduler.nextTriggerMillis(reminder, now))
     }
 }
